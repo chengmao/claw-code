@@ -23,8 +23,8 @@ use api::{
 
 use commands::{
     handle_agents_slash_command, handle_hooks_slash_command, handle_plugins_slash_command,
-    handle_skills_slash_command, render_slash_command_help, resume_supported_slash_commands,
-    slash_command_specs, suggest_slash_commands, SlashCommand,
+    handle_skills_slash_command, render_plugin_inspection_report, render_slash_command_help,
+    resume_supported_slash_commands, slash_command_specs, suggest_slash_commands, SlashCommand,
 };
 use compat_harness::{extract_manifest, UpstreamPaths};
 use init::initialize_repo;
@@ -1015,6 +1015,7 @@ fn run_resume_command(
         | SlashCommand::Permissions { .. }
         | SlashCommand::Session { .. }
         | SlashCommand::Plugins { .. }
+        | SlashCommand::ReloadPlugins
         | SlashCommand::Unknown(_) => Err("unsupported resumed slash command".into()),
     }
 }
@@ -1340,6 +1341,7 @@ impl LiveCli {
             SlashCommand::Plugins { action, target } => {
                 self.handle_plugins_command(action.as_deref(), target.as_deref())?
             }
+            SlashCommand::ReloadPlugins => self.reload_plugins_command()?,
             SlashCommand::Agents { args } => {
                 Self::print_agents(args.as_deref())?;
                 false
@@ -1668,6 +1670,22 @@ impl LiveCli {
         if result.reload_runtime {
             self.reload_runtime_features()?;
         }
+        Ok(false)
+    }
+
+    fn reload_plugins_command(&mut self) -> Result<bool, Box<dyn std::error::Error>> {
+        self.reload_runtime_features()?;
+
+        let cwd = env::current_dir()?;
+        let loader = ConfigLoader::default_for(&cwd);
+        let runtime_config = loader.load()?;
+        let manager = build_plugin_manager(&cwd, &loader, &runtime_config);
+        let inspection = manager.inspect()?;
+
+        println!(
+            "Plugin runtime reloaded from local manifests.\n{}",
+            render_plugin_inspection_report(&inspection)
+        );
         Ok(false)
     }
 
@@ -4528,8 +4546,9 @@ mod tests {
         assert!(help.contains("/export [file]"));
         assert!(help.contains("/session [list|switch <session-id>]"));
         assert!(help.contains(
-            "/plugin [list|install <path>|enable <name>|disable <name>|uninstall <id>|update <id>]"
+            "/plugin [inspect|list|install <path>|enable <name>|disable <name>|uninstall <id>|update <id>]"
         ));
+        assert!(help.contains("/reload-plugins"));
         assert!(help.contains("aliases: /plugins, /marketplace"));
         assert!(help.contains("/agents"));
         assert!(help.contains("/skills"));
@@ -4556,10 +4575,19 @@ mod tests {
             .expect("plugin descriptor should exist");
         assert_eq!(
             plugin.description.as_deref(),
-            Some("Manage Claw Code plugins")
+            Some("Inspect and manage local Claw Code plugins")
         );
         assert!(plugin.aliases.contains(&"/plugins".to_string()));
         assert!(plugin.aliases.contains(&"/marketplace".to_string()));
+
+        let reload = descriptors
+            .iter()
+            .find(|descriptor| descriptor.command == "/reload-plugins")
+            .expect("reload plugins descriptor should exist");
+        assert_eq!(
+            reload.description.as_deref(),
+            Some("Reload plugin-derived runtime features and print current support")
+        );
 
         let exit = descriptors
             .iter()

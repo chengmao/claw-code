@@ -648,6 +648,17 @@ pub struct PluginSummary {
     pub enabled: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginInspection {
+    pub install_root: PathBuf,
+    pub registry_path: PathBuf,
+    pub settings_path: PathBuf,
+    pub bundled_root: PathBuf,
+    pub external_dirs: Vec<PathBuf>,
+    pub discoverable_plugins: Vec<PluginSummary>,
+    pub installed_plugins: Vec<PluginSummary>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PluginRegistry {
     plugins: Vec<RegisteredPlugin>,
@@ -932,6 +943,31 @@ impl PluginManager {
     #[must_use]
     pub fn settings_path(&self) -> PathBuf {
         self.config.config_home.join(SETTINGS_FILE_NAME)
+    }
+
+    #[must_use]
+    pub fn bundled_root_path(&self) -> PathBuf {
+        self.config
+            .bundled_root
+            .clone()
+            .unwrap_or_else(Self::bundled_root)
+    }
+
+    #[must_use]
+    pub fn external_dirs(&self) -> &[PathBuf] {
+        &self.config.external_dirs
+    }
+
+    pub fn inspect(&self) -> Result<PluginInspection, PluginError> {
+        Ok(PluginInspection {
+            install_root: self.install_root(),
+            registry_path: self.registry_path(),
+            settings_path: self.settings_path(),
+            bundled_root: self.bundled_root_path(),
+            external_dirs: self.external_dirs().to_vec(),
+            discoverable_plugins: self.list_plugins()?,
+            installed_plugins: self.list_installed_plugins()?,
+        })
     }
 
     pub fn plugin_registry(&self) -> Result<PluginRegistry, PluginError> {

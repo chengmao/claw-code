@@ -84,16 +84,19 @@ Evidence:
 
 ### Rust exists
 Evidence:
-- No dedicated plugin subsystem appears under `rust/crates/`.
-- Repo-wide Rust references to plugins are effectively absent beyond text/help mentions.
+- Local plugin manifests, registry/state, install/update/uninstall flows, and bundled/external discovery live in `rust/crates/plugins/src/lib.rs`.
+- Runtime config parses plugin settings (`enabledPlugins`, external directories, install root, registry path, bundled root) in `rust/crates/runtime/src/config.rs`.
+- CLI wiring builds a `PluginManager`, exposes `/plugin` inspection/reporting, and now exposes `/reload-plugins` runtime rebuild/reporting in `rust/crates/commands/src/lib.rs` and `rust/crates/claw-cli/src/main.rs`.
+- Plugin-provided tools are merged into the runtime tool registry in `rust/crates/claw-cli/src/main.rs` and `rust/crates/tools/src/lib.rs`.
 
 ### Missing or broken in Rust
-- No plugin loader.
-- No marketplace install/update/enable/disable flow.
-- No `/plugin` or `/reload-plugins` parity.
-- No plugin-provided hook/tool/command/MCP extension path.
+- No TS-style marketplace/discovery/editor UI; current surfaces are local manifest/reporting oriented.
+- Plugin-defined slash commands are validated from manifests but not exposed in the CLI runtime.
+- Plugin hooks and lifecycle commands are validated but not wired into the conversation runtime startup/shutdown or hook runner.
+- No plugin-provided MCP/server extension path.
+- `/reload-plugins` only rebuilds the current local runtime; it is not a richer TS hot-reload/plugin-browser flow.
 
-**Status:** missing.
+**Status:** local plugin discovery/install/inspection exists; TS marketplace/runtime-extension parity is still partial.
 
 ---
 
@@ -133,7 +136,7 @@ Evidence:
 ### Rust exists
 Evidence:
 - Shared slash command registry in `rust/crates/commands/src/lib.rs`.
-- Rust slash commands currently cover `help`, `status`, `compact`, `model`, `permissions`, `clear`, `cost`, `resume`, `config`, `memory`, `init`, `diff`, `version`, `export`, `session`, `plugin`, `agents`, and `skills`.
+- Rust slash commands currently cover `help`, `status`, `compact`, `model`, `permissions`, `clear`, `cost`, `resume`, `config`, `hooks`, `memory`, `init`, `diff`, `version`, `export`, `session`, `plugin`, `reload-plugins`, `agents`, and `skills`.
 - Main CLI/repl/prompt handling lives in `rust/crates/claw-cli/src/main.rs`.
 
 ### Missing or broken in Rust

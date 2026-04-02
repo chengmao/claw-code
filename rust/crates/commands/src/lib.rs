@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use plugins::{PluginError, PluginManager, PluginSummary};
+use plugins::{PluginError, PluginInspection, PluginManager, PluginSummary};
 use runtime::{
     compact_session, discover_skill_roots, CompactionConfig, ConfigLoader, ConfigSource,
     RuntimeConfig, Session, SkillDiscoveryRoot, SkillDiscoverySource, SkillRootKind,
@@ -285,10 +285,18 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     SlashCommandSpec {
         name: "plugin",
         aliases: &["plugins", "marketplace"],
-        summary: "Manage Claw Code plugins",
+        summary: "Inspect and manage local Claw Code plugins",
         argument_hint: Some(
-            "[list|install <path>|enable <name>|disable <name>|uninstall <id>|update <id>]",
+            "[inspect|list|install <path>|enable <name>|disable <name>|uninstall <id>|update <id>]",
         ),
+        resume_supported: false,
+        category: SlashCommandCategory::Automation,
+    },
+    SlashCommandSpec {
+        name: "reload-plugins",
+        aliases: &[],
+        summary: "Reload plugin-derived runtime features and print current support",
+        argument_hint: None,
         resume_supported: false,
         category: SlashCommandCategory::Automation,
     },
@@ -378,6 +386,7 @@ pub enum SlashCommand {
         action: Option<String>,
         target: Option<String>,
     },
+    ReloadPlugins,
     Agents {
         args: Option<String>,
     },
@@ -467,6 +476,7 @@ impl SlashCommand {
                     (!remainder.is_empty()).then_some(remainder)
                 },
             },
+            "reload-plugins" => Self::ReloadPlugins,
             "agents" => Self::Agents {
                 args: remainder_after_command(trimmed, command),
             },
@@ -688,7 +698,11 @@ pub fn handle_plugins_slash_command(
     manager: &mut PluginManager,
 ) -> Result<PluginsCommandResult, PluginError> {
     match action {
-        None | Some("list") => Ok(PluginsCommandResult {
+        None | Some("inspect" | "status") => Ok(PluginsCommandResult {
+            message: render_plugin_inspection_report(&manager.inspect()?),
+            reload_runtime: false,
+        }),
+        Some("list") => Ok(PluginsCommandResult {
             message: render_plugins_report(&manager.list_installed_plugins()?),
             reload_runtime: false,
         }),
@@ -786,7 +800,7 @@ pub fn handle_plugins_slash_command(
         }
         Some(other) => Ok(PluginsCommandResult {
             message: format!(
-                "Unknown /plugins action '{other}'. Use list, install, enable, disable, uninstall, or update."
+                "Unknown /plugins action '{other}'. Use inspect, list, install, enable, disable, uninstall, or update."
             ),
             reload_runtime: false,
         }),
@@ -1242,6 +1256,87 @@ pub fn render_plugins_report(plugins: &[PluginSummary]) -> String {
     lines.join("\n")
 }
 
+#[must_use]
+pub fn render_plugin_inspection_report(inspection: &PluginInspection) -> String {
+    let mut lines = vec![
+        "Plugins".to_string(),
+        "  Current support  Local manifest discovery plus install/update/uninstall and enable/disable state".to_string(),
+        "  Runtime wiring   Plugin tools load on runtime rebuild; manifest-defined hooks, lifecycle, slash commands, and MCP extensions are not wired yet".to_string(),
+        format!(
+            "  Discoverable     {} total",
+            inspection.discoverable_plugins.len()
+        ),
+        format!(
+            "  Installed        {} total",
+            inspection.installed_plugins.len()
+        ),
+        "  Checked locations".to_string(),
+        render_report_path("Install root", &inspection.install_root, inspection.install_root.exists()),
+        render_report_path("Bundled root", &inspection.bundled_root, inspection.bundled_root.exists()),
+    ];
+
+    if inspection.external_dirs.is_empty() {
+        lines.push("    External dirs    none configured".to_string());
+    } else {
+        for (index, directory) in inspection.external_dirs.iter().enumerate() {
+            lines.push(render_report_path(
+                if index == 0 {
+                    "External dirs"
+                } else {
+                    "External dir"
+                },
+                directory,
+                directory.exists(),
+            ));
+        }
+    }
+
+    lines.push(render_report_path(
+        "Registry file",
+        &inspection.registry_path,
+        inspection.registry_path.exists(),
+    ));
+    lines.push(render_report_path(
+        "Settings file",
+        &inspection.settings_path,
+        inspection.settings_path.exists(),
+    ));
+
+    lines.push("  Missing parity".to_string());
+    lines.push("    TS marketplace/discovery UI is not implemented.".to_string());
+    lines.push(
+        "    Plugin-defined slash commands are parsed from manifests but not exposed.".to_string(),
+    );
+    lines.push(
+        "    Plugin hooks/lifecycle are validated but not attached to the conversation runtime."
+            .to_string(),
+    );
+    lines.push(
+        "    No plugin hot-swap beyond /reload-plugins rebuilding the current runtime.".to_string(),
+    );
+
+    lines.push("  Installed plugins".to_string());
+    if inspection.installed_plugins.is_empty() {
+        lines.push("    none".to_string());
+    } else {
+        for plugin in &inspection.installed_plugins {
+            lines.push(format!(
+                "    - {} · {} v{} · {}",
+                plugin.metadata.id,
+                plugin.metadata.kind,
+                plugin.metadata.version,
+                if plugin.enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            ));
+        }
+    }
+
+    lines.join("\n")
+}
+
 fn render_plugin_install_report(plugin_id: &str, plugin: Option<&PluginSummary>) -> String {
     let name = plugin.map_or(plugin_id, |plugin| plugin.metadata.name.as_str());
     let version = plugin.map_or("unknown", |plugin| plugin.metadata.version.as_str());
@@ -1270,6 +1365,14 @@ fn resolve_plugin_target(
             "plugin name `{target}` is ambiguous; use the full plugin id"
         ))),
     }
+}
+
+fn render_report_path(label: &str, path: &Path, exists: bool) -> String {
+    format!(
+        "    {label:<15} {} ({})",
+        path.display(),
+        if exists { "present" } else { "missing" }
+    )
 }
 
 fn discover_definition_roots(cwd: &Path, leaf: &str) -> Vec<(DefinitionSource, PathBuf)> {
@@ -1801,6 +1904,7 @@ pub fn handle_slash_command(
         | SlashCommand::Export { .. }
         | SlashCommand::Session { .. }
         | SlashCommand::Plugins { .. }
+        | SlashCommand::ReloadPlugins
         | SlashCommand::Agents { .. }
         | SlashCommand::Skills { .. }
         | SlashCommand::Unknown(_) => None,
@@ -2135,6 +2239,10 @@ mod tests {
                 target: Some("demo".to_string())
             })
         );
+        assert_eq!(
+            SlashCommand::parse("/reload-plugins"),
+            Some(SlashCommand::ReloadPlugins)
+        );
     }
 
     #[test]
@@ -2173,12 +2281,13 @@ mod tests {
         assert!(help.contains("/export [file]"));
         assert!(help.contains("/session [list|switch <session-id>]"));
         assert!(help.contains(
-            "/plugin [list|install <path>|enable <name>|disable <name>|uninstall <id>|update <id>]"
+            "/plugin [inspect|list|install <path>|enable <name>|disable <name>|uninstall <id>|update <id>]"
         ));
         assert!(help.contains("aliases: /plugins, /marketplace"));
+        assert!(help.contains("/reload-plugins"));
         assert!(help.contains("/agents"));
         assert!(help.contains("/skills"));
-        assert_eq!(slash_command_specs().len(), 29);
+        assert_eq!(slash_command_specs().len(), 30);
         assert_eq!(resume_supported_slash_commands().len(), 14);
     }
 
@@ -2299,6 +2408,10 @@ mod tests {
         assert!(
             handle_slash_command("/plugins list", &session, CompactionConfig::default()).is_none()
         );
+        assert!(
+            handle_slash_command("/reload-plugins", &session, CompactionConfig::default())
+                .is_none()
+        );
     }
 
     #[test]
@@ -2338,6 +2451,47 @@ mod tests {
         assert!(rendered.contains("sample"));
         assert!(rendered.contains("v0.9.0"));
         assert!(rendered.contains("disabled"));
+    }
+
+    #[test]
+    fn default_plugin_action_renders_inspection_report() {
+        let config_home = temp_dir("plugins-inspect-home");
+        let bundled_root = temp_dir("plugins-inspect-bundled");
+        let bundled_plugin = bundled_root.join("starter");
+        write_bundled_plugin(&bundled_plugin, "starter", "0.1.0", false);
+
+        let mut config = PluginManagerConfig::new(&config_home);
+        config.bundled_root = Some(bundled_root.clone());
+        config.external_dirs = vec![config_home.join("external")];
+        let mut manager = PluginManager::new(config);
+
+        let inspection = handle_plugins_slash_command(None, None, &mut manager)
+            .expect("inspect command should succeed");
+        assert!(!inspection.reload_runtime);
+        assert!(inspection.message.contains("Current support"));
+        assert!(inspection.message.contains("Checked locations"));
+        assert!(inspection
+            .message
+            .contains(&manager.install_root().display().to_string()));
+        assert!(inspection
+            .message
+            .contains(&manager.bundled_root_path().display().to_string()));
+        assert!(inspection
+            .message
+            .contains(&manager.registry_path().display().to_string()));
+        assert!(inspection
+            .message
+            .contains(&manager.settings_path().display().to_string()));
+        assert!(inspection
+            .message
+            .contains("Plugin-defined slash commands are parsed from manifests but not exposed."));
+        assert!(inspection.message.contains(
+            "Plugin hooks/lifecycle are validated but not attached to the conversation runtime."
+        ));
+        assert!(inspection.message.contains("starter@bundled"));
+
+        let _ = fs::remove_dir_all(config_home);
+        let _ = fs::remove_dir_all(bundled_root);
     }
 
     #[test]
